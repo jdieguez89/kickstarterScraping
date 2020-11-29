@@ -18,7 +18,7 @@ def get_ext(url):
     return file
 
 
-def get_all_media(files, path, version, media_type):
+def get_all_media(files, path, version='', media_type=''):
     input_queue = Queue()
     result_hash = {}
     cache = {}
