@@ -128,12 +128,5 @@ def download(url, pathname, version='', media_type=''):
     logging.info(msg='Saved in ' + pathname)
 
 
-def get_ext(url):
-    """Return the filename extension from url, or ''."""
-    ext = str(url).split('?')[0]
-    file = ext.split('.')[-1]
-    return file
-
-
 def resolve_file_name(url):
     return str(url).split('?')[0].split("/")[-1]
