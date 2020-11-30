@@ -1,26 +1,108 @@
+import datetime
+import logging
+import queue
+import re
+import signal
+import threading
+import time
 import tkinter as tk
-from tkinter.ttk import Progressbar
+from tkinter import ttk, VERTICAL, HORIZONTAL, N, S, E, W
+from tkinter.scrolledtext import ScrolledText
 
-from core.downloader import download, get_all_media, get_all_thumbnails
-from core.kickstarter_service import KickstarterService
+from core.downloader import get_all_media, get_all_thumbnails, download_file
+from core.kickstarter_service import get_project_info, get_creator_info
 from core.notification.notification import NotificationManager
 from core.page_scrap import PageScrap
 from core.singlenton.app_path import AppPath
-from core.singlenton.logger import Logger
 from core.singlenton.webdriver import WebDriver
 
+logger = logging.getLogger(__name__)
 
-def make_form(root, fields):
-    entries = []
-    for field in fields:
-        row = tk.Frame(root)
-        lab = tk.Label(row, width=15, text=field, anchor='w')
-        ent = tk.Entry(row)
-        row.pack(side=tk.TOP, fill=tk.X, padx=5, pady=10)
-        lab.pack(side=tk.LEFT)
-        ent.pack(side=tk.RIGHT, expand=tk.YES, fill=tk.X)
-        entries.append((field, ent))
-    return entries
+
+class Clock(threading.Thread):
+    """Class to display the time every seconds
+
+    Every 5 seconds, the time is displayed using the logging.ERROR level
+    to show that different colors are associated to the log levels
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._stop_event = threading.Event()
+
+    def run(self):
+        logger.debug('App connected to log')
+        previous = -1
+        while not self._stop_event.is_set():
+            now = datetime.datetime.now()
+            if previous != now.second:
+                time.sleep(0.2)
+
+    def stop(self):
+        self._stop_event.set()
+
+
+class QueueHandler(logging.Handler):
+    """Class to send logging records to a queue
+
+    It can be used from different threads
+    The ConsoleUi class polls this queue to display records in a ScrolledText widget
+    """
+
+    # Example from Moshe Kaplan: https://gist.github.com/moshekaplan/c425f861de7bbf28ef06
+    # (https://stackoverflow.com/questions/13318742/python-logging-to-tkinter-text-widget) is not thread safe!
+    # See https://stackoverflow.com/questions/43909849/tkinter-python-crashes-on-new-thread-trying-to-log-on-main-thread
+
+    def __init__(self, log_queue):
+        super().__init__()
+        self.log_queue = log_queue
+
+    def emit(self, record):
+        self.log_queue.put(record)
+
+
+class ConsoleUi:
+    """Poll messages from a logging queue and display them in a scrolled text widget"""
+
+    def __init__(self, frame):
+        self.frame = frame
+        # Create a ScrolledText wdiget
+        self.scrolled_text = ScrolledText(frame, state='disabled', height=12)
+        self.scrolled_text.grid(row=0, column=0, sticky=(N, S, W, E))
+        self.scrolled_text.configure(font='TkFixedFont')
+        self.scrolled_text.tag_config('INFO', foreground='black')
+        self.scrolled_text.tag_config('DEBUG', foreground='gray')
+        self.scrolled_text.tag_config('WARNING', foreground='orange')
+        self.scrolled_text.tag_config('ERROR', foreground='red')
+        self.scrolled_text.tag_config('CRITICAL', foreground='red', underline=1)
+        # Create a logging handler using a queue
+        self.log_queue = queue.Queue()
+        self.queue_handler = QueueHandler(self.log_queue)
+        formatter = logging.Formatter('%(asctime)s: %(message)s')
+        self.queue_handler.setFormatter(formatter)
+        logger.addHandler(self.queue_handler)
+        # Start polling messages from the queue
+        self.frame.after(100, self.poll_log_queue)
+
+    def display(self, record):
+        msg = self.queue_handler.format(record)
+        self.scrolled_text.configure(state='normal')
+        self.scrolled_text.insert(tk.END, msg + '\n', record.levelname)
+        self.scrolled_text.configure(state='disabled')
+        # Autoscroll to the bottom
+        self.scrolled_text.yview(tk.END)
+
+    def poll_log_queue(self):
+        # Check every 100ms if there is a new message in the queue to display
+        while True:
+            try:
+                record = self.log_queue.get(block=False)
+                print(record)
+            except queue.Empty:
+                break
+            else:
+                self.display(record)
+        self.frame.after(100, self.poll_log_queue)
 
 
 def process_url(url: str):
@@ -30,89 +112,163 @@ def process_url(url: str):
     return url
 
 
+def isValidURL(str):
+    # Regex to check valid URL
+    regex = ("((http|https)://)(www.)?" +
+             "[a-zA-Z0-9@:%._\\+~#?&//=]" +
+             "{2,256}\\.[a-z]" +
+             "{2,6}\\b([-a-zA-Z0-9@:%" +
+             "._\\+~#?&//=]*)")
+
+    # Compile the ReGex
+    p = re.compile(regex)
+
+    # If the string is empty
+    # return false
+    if str is None:
+        return False
+
+    # Return if the string
+    # matched the ReGex
+    if re.search(p, str):
+        return True
+    else:
+        return False
+
+
 class App:
     notification_manager = NotificationManager(background="white")
-    logging = Logger()
     workspace = AppPath()
-    scraper = PageScrap()
-    root = tk.Tk()
-    root.geometry("800x100")
-    root.title("Kickstarter Scrapper")
-    # root.iconbitmap("assets/favicon.ico")
-    fields = ['Kickstarter url']
     webdriver = WebDriver()
+    scraper = PageScrap()
 
-    def __init__(self):
-        print('Init application:' + self.workspace)
-        self.progress = Progressbar(self.root, orient=tk.HORIZONTAL, length=100, mode='determinate')
+    def __init__(self, root):
+        self.root = root
+        root.title("Kickstarter Scrapper")
+        root.iconbitmap("assets/favicon.ico")
 
-    def update_progress(self, value):
-        print('updating progress')
-        num = ((value['value'] / value['total']) * 100).__round__(0)
-        self.progress.step(num)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+        # Create the panes and frames
+        vertical_pane = ttk.PanedWindow(self.root, orient=VERTICAL)
+        vertical_pane.grid(row=1, column=0, sticky="nsew")
+        horizontal_pane = ttk.PanedWindow(vertical_pane, orient=HORIZONTAL)
+        vertical_pane.add(horizontal_pane)
+        console_frame = ttk.Labelframe(horizontal_pane, text="Console")
+        console_frame.columnconfigure(0, weight=1)
+        console_frame.rowconfigure(0, weight=1)
+        horizontal_pane.add(console_frame, weight=1)
+        third_frame = ttk.Labelframe(vertical_pane, text="Actions")
+        vertical_pane.add(third_frame, weight=1)
+        self.button = ttk.Button(third_frame, text='Download', command=lambda: self.fetch())
+        self.button.grid(column=1, row=0, sticky=W)
 
-    def fetch(self, entries):
-        url = entries[0][1].get()
+        # Initialize all frames
+        self.console = ConsoleUi(console_frame)
+        self.clock = Clock()
+        self.clock.start()
+        self.root.protocol('WM_DELETE_WINDOW', self.quit)
+        self.root.bind('<Control-q>', self.quit)
+        signal.signal(signal.SIGINT, self.quit)
 
-        if url != '':
-            self.download(url)
+    def fetch(self):
+        th = threading.Thread(target=self.download)
+        th.start()
 
     def close(self):
         self.webdriver.quit()
         self.root.quit()
 
-    def download(self, url):
-        project_id = self.get_project_id(url)
-        path = self.get_project_path(project_id)
-        self.download_project_info(project_id, path)
-        self.logging.info('Starting web scraping for project ' + project_id)
-        self.webdriver.get(url)
-        self.download_images(path)
-        self.download_videos(path)
+    def download(self):
+        url = self.webdriver.current_url
+        logger.info(url)
+        if isValidURL(url) and url.startswith("https://www.kickstarter.com/projects/"):
+            project_id = self.get_project_id(url)
+            path = self.get_project_path(project_id)
+            self.button['state'] = tk.DISABLED
+            self.button['text'] = 'Downloading...'
+            logger.info('Starting web scraping for project ' + project_id)
+            logger.info('Starting image scraping ')
+            self.download_images(path)
+            logger.info('Starting video scraping ')
+            self.download_videos(path)
+            self.download_project_info(project_id, path)
+            logger.info('Download successfully ')
+            self.button['state'] = tk.NORMAL
+            self.button['text'] = 'Download'
+            self.create_notification(5, 'Project downloaded successfully')
+        else:
+            logger.error('Invalid Kickstarter project url ')
 
     def download_project_info(self, project_id, path):
-        self.logging.info(msg='Searching project ' + project_id + 'info in Kickstarter')
-        project_json = KickstarterService().get_project_info(project_id)
+        logger.info(msg='Searching project ' + project_id + 'info in Kickstarter')
+        project_json = get_project_info(project_id)
         if project_json is not None and len(project_json['projects']) > 0:
             project = project_json['projects'][0]
-            # logging.info(msg='Download project info')
+            logging.info(msg='Download project info')
             # export_project_info = DownloadFiles().download_file(path=path, info=self.build_object_project(project))
             # if export_project_info:
             #     logging.info(msg='Project info exported as json in ' + path)
+            logger.info('Searching thumbnails...')
             get_all_thumbnails(project['photo'], path + 'video\\thumbnails')
+            logger.info('Thumbnails downloaded')
+            self.download_creator_info(project, path)
+        else:
+            logger.error('Kickstarter project not found')
+
+    def download_creator_info(self, project, path):
+        logger.info("Downloading creator info")
+        try:
+            creator_api_url = project["creator"]["urls"]["api"]['user']
+            creator = get_creator_info(creator_api_url)
+            logger.info("Creator is " + creator["name"] + ", generating info...")
+            creator_info = {
+                "name": creator["name"],
+                "profile": creator["urls"]["web"]["user"],
+                "biography": creator["biography"],
+                "links": PageScrap().get_creator_links()
+            }
+            logger.info("Downloading " + creator["name"] + " thumbnails...")
+            get_all_thumbnails(creator['avatar'], path + 'creator\\avatar')
+            logger.info("Thumbnails downloaded...")
+            download_file(path + "creator\\", creator_info, "creator-info.txt")
+            print(creator)
+        except Exception as e:
+            logger.error("Error getting creator info ->" + str(e))
 
     def download_images(self, path):
-        self.logging.info(msg='Init webpage images download')
+        logger.info(msg='Init project images download')
         images_content = PageScrap().get_all_images()
         try:
             if images_content is not None:
-                self.logging.info(msg='Found ' + str(len(images_content)) + ' images')
+                logger.info(msg='Found ' + str(len(images_content)) + ' images, starting download')
                 get_all_media(images_content, path, '', 'images')
-                self.logging.info(msg='Webpage images downloaded successfully')
+                logger.info(msg='Project images downloaded successfully')
         except TypeError as e:
-            self.logging.error('ERROR getting images from page -> ' + str(e))
+            logger.error('ERROR getting images from page -> ' + str(e))
         self.webdriver.execute_script("window.scrollTo(0,0)")
 
     def download_videos(self, path):
-        self.logging.info(msg='Init webpage video download')
+        logger.info(msg='Init project video download')
         videos = PageScrap().get_video_links()
         try:
             if videos is not None:
-                self.logging.info(msg='Found ' + str(len(videos)) + ' videos')
+                logger.info(msg='Found ' + str(len(videos)) + ' videos, starting download')
                 get_all_media(videos, path + 'video')
-                self.logging.info(msg='Webpage videos downloaded successfully')
+                logger.info(msg='Project videos downloaded successfully')
         except TypeError as e:
-            self.logging.error('ERROR getting videos from page -> ' + str(e))
+            logger.error('ERROR getting videos from page -> ' + str(e))
         self.webdriver.execute_script("window.scrollTo(0,0)")
 
     def get_project_id(self, url):
         project_id = process_url(url).split('?')[0].split('/')[-1]
-        self.logging.info(
-            msg='***************************** ' + project_id.upper() + '***************************** ')
+        logger.info(project_id.upper())
         return project_id
 
     def get_project_path(self, project_id):
-        return self.workspace + '\\downloads\\' + project_id + '\\'
+        path = self.workspace + '\\downloads\\' + project_id + '\\'
+        logger.info('Project will save in ' + path)
+        return path
 
     def create_notification(self, start_time, text):
         def notify():
@@ -123,19 +279,17 @@ class App:
 
         self.root.after(start_time, notify)
 
-    def init_app(self):
-        ents = make_form(self.root, self.fields)
-        self.root.bind('<Return>', (lambda event, e=ents: self.fetch(e)))
-        # self.progress.pack(pady=15)
-        # self.progress.place(x=10, y=90, width=380)
+    def quit(self, *args):
+        self.clock.stop()
+        self.root.destroy()
 
-        b2 = tk.Button(self.root, text='Quit', command=(lambda e=ents: self.close()))
-        b1 = tk.Button(self.root, text='Download', command=(lambda e=ents: self.fetch(e)), bg='brown', fg='white')
-        b1.pack(side=tk.RIGHT, padx=10, pady=5)
-        b2.pack(side=tk.RIGHT, padx=10, pady=5)
 
-        self.root.mainloop()
+def main():
+    logging.basicConfig(level=logging.DEBUG)
+    root = tk.Tk()
+    app = App(root)
+    app.root.mainloop()
 
 
 if __name__ == '__main__':
-    App().init_app()
+    main()

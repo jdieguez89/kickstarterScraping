@@ -1,3 +1,5 @@
+import csv
+import json
 import logging
 import os
 import threading
@@ -7,6 +9,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3 import Retry
+
+logger = logging.getLogger(__name__)
 
 """ Improve this"""
 
@@ -88,44 +92,73 @@ def download(url, pathname, version='', media_type=''):
     """
     Downloads a file given an URL and puts it in the folder `pathname`
     """
+    try:
+        session = requests.Session()
+        retry = Retry(connect=3, backoff_factor=0.5)
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/50.0.2661.102 Safari/537.36'}
 
-    session = requests.Session()
-    retry = Retry(connect=3, backoff_factor=0.5)
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) '
-                      'Chrome/50.0.2661.102 Safari/537.36'}
+        # if media type is images then separate each one by extension
+        if media_type == 'images':
+            pathname += '\\images\\' + get_ext(url)
 
-    # if media type is images then separate each one by extension
-    if media_type == 'images':
-        pathname += '\\images\\' + get_ext(url)
+        # if path doesn't exist, make that path dir
+        if not os.path.isdir(pathname):
+            os.makedirs(pathname, exist_ok=True)
+        # download the body of response by chunk, not immediately
+        response = session.get(url, headers=headers)
 
-    # if path doesn't exist, make that path dir
-    if not os.path.isdir(pathname):
-        os.makedirs(pathname, exist_ok=True)
-    # download the body of response by chunk, not immediately
-    response = session.get(url, headers=headers)
+        # get the total file size
+        file_size = int(response.headers.get("Content-Length", 0))
 
-    # get the total file size
-    file_size = int(response.headers.get("Content-Length", 0))
+        # get the file name
+        filename = os.path.join(pathname, resolve_file_name(url))
 
-    # get the file name
-    filename = os.path.join(pathname, resolve_file_name(url))
+        # progress bar, changing the unit to bytes instead of iteration (default by tqdm)
+        progress = tqdm(response.iter_content(1024),
+                        f"Downloading {resolve_file_name(url)} version {version}", total=file_size, unit="B",
+                        unit_scale=True, unit_divisor=1024)
+        logger.info(progress)
 
-    # progress bar, changing the unit to bytes instead of iteration (default by tqdm)
-    progress = tqdm(response.iter_content(1024),
-                    f"Downloading {resolve_file_name(url)} version {version}", total=file_size, unit="B",
-                    unit_scale=True, unit_divisor=1024)
+        with open(filename, "wb") as f:
+            for data in progress:
+                # write data read to the file
+                f.write(data)
+                # update the progress bar manually
+                progress.update(len(data))
+        logger.info(msg='Saved in ' + pathname)
+    except ConnectionError as e:
+        logger.error(e)
 
-    with open(filename, "wb") as f:
-        for data in progress:
-            # write data read to the file
-            f.write(data)
-            # update the progress bar manually
-            progress.update(len(data))
-    logging.info(msg='Saved in ' + pathname)
+
+def download_file(path, info, file_name):
+    try:
+        dirname = os.path.dirname(path)
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+        filename = path + file_name
+        if os.path.exists(filename):
+            append_write = 'a'
+        else:
+            append_write = 'w'
+
+        with open(filename, append_write) as f:
+            f.write(json.dumps(info))
+            #
+            # for key in info.keys():
+            #     f.write("%s,%s\n" % (key, info[key]))
+            # writer = csv.DictWriter(
+            #     f, fieldnames=["property", "value"])
+            # writer.writeheader()
+            f.close()
+        return True
+    except FileNotFoundError:
+        logging.error('File not exist')
+        return False
 
 
 def resolve_file_name(url):

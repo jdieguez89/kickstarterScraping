@@ -1,4 +1,3 @@
-import os
 from selenium import webdriver
 
 from core.singlenton.app_path import AppPath
@@ -7,10 +6,11 @@ from core.singlenton.app_path import AppPath
 class WebDriver:
     class __WebDriver:
         def __init__(self):
-            self.driver_path = AppPath() + '/driver/chromedriver.exe'
             self.options = webdriver.ChromeOptions()
             self.options.add_argument("--start-maximized")
+            self.driver_path = AppPath() + '/driver/chromedriver.exe'
             self.driver = webdriver.Chrome(executable_path=self.driver_path, chrome_options=self.options)
+            self.driver.get('https://www.kickstarter.com/')
 
     def close_webdriver(self):
         self.driver.quit()

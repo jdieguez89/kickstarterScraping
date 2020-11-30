@@ -1,7 +1,11 @@
 import logging
+try:
+    from cStringIO import StringIO      # Python 2
+except ImportError:
+    from io import StringIO
 
 
-class Logger(object):
+class Logger:
     class __Logger:
         def __init__(self):
             logging.basicConfig(filename='downloader.log', level=logging.DEBUG, format='%(asctime)s %(message)s',

@@ -1,3 +1,4 @@
+import logging
 import time
 from urllib.parse import urlparse
 
@@ -6,14 +7,15 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from core.singlenton.logger import Logger
+
 from core.singlenton.webdriver import WebDriver
+
+logger = logging.getLogger(__name__)
 
 
 class PageScrap:
 
     def __init__(self):
-        self.logging = Logger()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/50.0.2661.102 Safari/537.36'}
@@ -26,8 +28,8 @@ class PageScrap:
             urls = [img.get_attribute('src') for img in videos]
             return urls
         except requests.exceptions.RequestException as e:  # This is the correct syntax
-            self.logging.info(msg='Unable to connect..., check your connection and try again')
-            self.logging.error(msg=str(e))
+            logger.error(msg='Unable to connect..., check your connection and try again')
+            logger.error(msg=str(e))
             raise SystemExit(e)
 
     def is_valid(self, url):
@@ -52,8 +54,18 @@ class PageScrap:
             urls = [img.get_attribute('src') for img in img_tags]
             return urls
         except TimeoutException as e:
-            self.logging.info('TimeoutException ' + e.msg)
+            logger.error('TimeoutException ' + e.msg)
             return ValueError
         except WebDriverException as e:
-            self.logging.info('WebDriverException ' + e.msg)
+            logger.error('WebDriverException ' + e.msg)
             return ValueError
+
+    def get_creator_links(self):
+        try:
+            elem = self.driver.find_element_by_class_name("keyboard-focusable-soft-black")
+            elem.click()
+            time.sleep(4)
+            links = self.driver.find_elements_by_css_selector(".block.type-16.link-soft-black.medium")
+            return [link.get_attribute("href") for link in links]
+        except Exception as e:
+            logger.error(e)
