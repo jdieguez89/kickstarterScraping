@@ -31,6 +31,10 @@ class PageScrap:
             logger.error(msg='Unable to connect..., check your connection and try again')
             logger.error(msg=str(e))
             raise SystemExit(e)
+        except WebDriverException as e:
+            logger.error(msg='Unable to connect with web driver')
+            logger.error(msg=str(e))
+            raise SystemExit(e)
 
     def is_valid(self, url):
         """

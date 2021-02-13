@@ -9,6 +9,8 @@ import tkinter as tk
 from tkinter import ttk, VERTICAL, HORIZONTAL, N, S, E, W
 from tkinter.scrolledtext import ScrolledText
 
+from selenium.common.exceptions import WebDriverException
+
 from core.downloader import get_all_media, get_all_thumbnails, download_file
 from core.kickstarter_service import get_project_info, get_creator_info
 from core.notification.notification import NotificationManager
@@ -31,7 +33,7 @@ class Clock(threading.Thread):
         self._stop_event = threading.Event()
 
     def run(self):
-        logger.debug('App connected to log')
+        logger.debug('kickstarter Scraping trying to connect with https://www.kickstarter.com/')
         previous = -1
         while not self._stop_event.is_set():
             now = datetime.datetime.now()
@@ -112,7 +114,7 @@ def process_url(url: str):
     return url
 
 
-def isValidURL(str):
+def is_valid_url(url):
     # Regex to check valid URL
     regex = ("((http|https)://)(www.)?" +
              "[a-zA-Z0-9@:%._\\+~#?&//=]" +
@@ -125,15 +127,88 @@ def isValidURL(str):
 
     # If the string is empty
     # return false
-    if str is None:
+    if url is None:
         return False
 
     # Return if the string
     # matched the ReGex
-    if re.search(p, str):
+    if re.search(p, url):
         return True
     else:
         return False
+
+
+def build_object_project(project):
+    return {
+        "name": project['name'],
+        "blurb": project['blurb'],
+        "goal": project['goal'],
+        "pledged": project['pledged'],
+        "state": project['state'],
+        "slug": project['slug'],
+        "disable_communication": project['disable_communication'],
+        "country": project['country'],
+        "country_displayable_name": project['country_displayable_name'],
+        "currency": project['currency'],
+        "currency_symbol": project['currency_symbol'],
+        "currency_trailing_code": project['currency_trailing_code'],
+        "deadline": project['deadline'],
+        "state_changed_at": project['state_changed_at'],
+        "created_at": project['created_at'],
+        "launched_at": project['launched_at'],
+        "staff_pick": project['staff_pick'],
+        "is_starrable": project['is_starrable'],
+        "backers_count": project['backers_count'],
+        "static_usd_rate": project['static_usd_rate'],
+        "usd_pledged": project['usd_pledged'],
+        "converted_pledged_amount": project['converted_pledged_amount'],
+        "fx_rate": project['fx_rate'],
+        "current_currency": project['current_currency'],
+        "usd_type": project['usd_type'],
+    }
+
+
+def get_project_id(url):
+    project_id = process_url(url).split('?')[0].split('/')[-1]
+    logger.info(project_id.upper())
+    return project_id
+
+
+def download_creator_info(project, path):
+    logger.info("Downloading creator info")
+    try:
+        creator_api_url = project["creator"]["urls"]["api"]['user']
+        creator = get_creator_info(creator_api_url)
+        logger.info("Creator is " + creator["name"] + ", generating info...")
+        creator_info = {
+            "name": creator["name"],
+            "profile": creator["urls"]["web"]["user"],
+            "biography": creator["biography"],
+            "links": PageScrap().get_creator_links()
+        }
+        logger.info("Downloading " + creator["name"] + " thumbnails...")
+        get_all_thumbnails(creator['avatar'], path + 'creator\\avatar')
+        logger.info("Thumbnails downloaded...")
+        download_file(path + "creator\\", creator_info, "creator-info.txt")
+        print(creator)
+    except Exception as e:
+        logger.error("Error getting creator info ->" + str(e))
+
+
+def download_project_info(project_id, path):
+    logger.info(msg='Searching project ' + project_id + 'info in Kickstarter')
+    project_json = get_project_info(project_id)
+    if project_json is not None and len(project_json['projects']) > 0:
+        project = project_json['projects'][0]
+        logging.info(msg='Download project info')
+        download_file(path, build_object_project(project), "project-info.txt")
+        logging.info(msg='Project info downloaded')
+        logger.info('Searching project thumbnails...')
+        get_all_thumbnails(project['photo'], path + 'video\\thumbnails')
+        logger.info('Thumbnails downloaded')
+        download_creator_info(project, path)
+    else:
+        logger.error('Kickstarter project not found')
 
 
 class App:
@@ -154,7 +229,7 @@ class App:
         vertical_pane.grid(row=1, column=0, sticky="nsew")
         horizontal_pane = ttk.PanedWindow(vertical_pane, orient=HORIZONTAL)
         vertical_pane.add(horizontal_pane)
-        console_frame = ttk.Labelframe(horizontal_pane, text="Console")
+        console_frame = ttk.Labelframe(horizontal_pane, text="Output")
         console_frame.columnconfigure(0, weight=1)
         console_frame.rowconfigure(0, weight=1)
         horizontal_pane.add(console_frame, weight=1)
@@ -180,61 +255,28 @@ class App:
         self.root.quit()
 
     def download(self):
-        url = self.webdriver.current_url
-        logger.info(url)
-        if isValidURL(url) and url.startswith("https://www.kickstarter.com/projects/"):
-            project_id = self.get_project_id(url)
-            path = self.get_project_path(project_id)
-            self.button['state'] = tk.DISABLED
-            self.button['text'] = 'Downloading...'
-            logger.info('Starting web scraping for project ' + project_id)
-            logger.info('Starting image scraping ')
-            self.download_images(path)
-            logger.info('Starting video scraping ')
-            self.download_videos(path)
-            self.download_project_info(project_id, path)
-            logger.info('Download successfully ')
-            self.button['state'] = tk.NORMAL
-            self.button['text'] = 'Download'
-            self.create_notification(5, 'Project downloaded successfully')
-        else:
-            logger.error('Invalid Kickstarter project url ')
-
-    def download_project_info(self, project_id, path):
-        logger.info(msg='Searching project ' + project_id + 'info in Kickstarter')
-        project_json = get_project_info(project_id)
-        if project_json is not None and len(project_json['projects']) > 0:
-            project = project_json['projects'][0]
-            logging.info(msg='Download project info')
-            # export_project_info = DownloadFiles().download_file(path=path, info=self.build_object_project(project))
-            # if export_project_info:
-            #     logging.info(msg='Project info exported as json in ' + path)
-            logger.info('Searching thumbnails...')
-            get_all_thumbnails(project['photo'], path + 'video\\thumbnails')
-            logger.info('Thumbnails downloaded')
-            self.download_creator_info(project, path)
-        else:
-            logger.error('Kickstarter project not found')
-
-    def download_creator_info(self, project, path):
-        logger.info("Downloading creator info")
         try:
-            creator_api_url = project["creator"]["urls"]["api"]['user']
-            creator = get_creator_info(creator_api_url)
-            logger.info("Creator is " + creator["name"] + ", generating info...")
-            creator_info = {
-                "name": creator["name"],
-                "profile": creator["urls"]["web"]["user"],
-                "biography": creator["biography"],
-                "links": PageScrap().get_creator_links()
-            }
-            logger.info("Downloading " + creator["name"] + " thumbnails...")
-            get_all_thumbnails(creator['avatar'], path + 'creator\\avatar')
-            logger.info("Thumbnails downloaded...")
-            download_file(path + "creator\\", creator_info, "creator-info.txt")
-            print(creator)
-        except Exception as e:
-            logger.error("Error getting creator info ->" + str(e))
+            url = self.webdriver.current_url
+            logger.info(url)
+            if is_valid_url(url) and url.startswith("https://www.kickstarter.com/projects/"):
+                project_id = get_project_id(url)
+                path = self.get_project_path(project_id)
+                self.button['state'] = tk.DISABLED
+                self.button['text'] = 'Downloading...'
+                logger.info('Starting web scraping for project ' + project_id)
+                logger.info('Starting image scraping ')
+                self.download_images(path)
+                logger.info('Starting video scraping ')
+                self.download_videos(path)
+                download_project_info(project_id, path)
+                logger.info('Download successfully ')
+                self.button['state'] = tk.NORMAL
+                self.button['text'] = 'Download'
+                self.create_notification(5, 'Project downloaded successfully')
+            else:
+                logger.error('Invalid Kickstarter project url ')
+        except Exception:
+            logger.error(msg='Unable to connect with Chrome browser, please install')
 
     def download_images(self, path):
         logger.info(msg='Init project images download')
@@ -260,11 +302,6 @@ class App:
             logger.error('ERROR getting videos from page -> ' + str(e))
         self.webdriver.execute_script("window.scrollTo(0,0)")
 
-    def get_project_id(self, url):
-        project_id = process_url(url).split('?')[0].split('/')[-1]
-        logger.info(project_id.upper())
-        return project_id
-
     def get_project_path(self, project_id):
         path = self.workspace + '\\downloads\\' + project_id + '\\'
         logger.info('Project will save in ' + path)
@@ -279,7 +316,7 @@ class App:
 
         self.root.after(start_time, notify)
 
-    def quit(self, *args):
+    def quit(self):
         self.clock.stop()
         self.root.destroy()
 

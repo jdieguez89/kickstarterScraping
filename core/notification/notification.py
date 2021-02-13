@@ -88,7 +88,6 @@ class Notification(Toplevel):
         self._total_ticks = float(ticks)
         self._easing_function = easing_function
         self._duration = duration
-
         self._interval_time = int(duration * 1000 / self._total_ticks)
 
         if start_time != 0:

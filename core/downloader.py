@@ -1,4 +1,3 @@
-import csv
 import json
 import logging
 import os
@@ -10,7 +9,9 @@ from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3 import Retry
 
-logger = logging.getLogger(__name__)
+from core.singlenton.logger import Logger
+
+logger = Logger()
 
 """ Improve this"""
 
